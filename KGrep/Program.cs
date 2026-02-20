@@ -1,28 +1,52 @@
 ﻿using KGrep;
 
-if (args[0] != "-E")
-{
-    Console.WriteLine("Expected first argument to be '-E'");
-    Environment.Exit(2);
-}
+var onlyMatching = false;
+var extendedRegularExpressions = false;
 
-string pattern = args[1];
+var pattern = string.Empty;
 string inputLine = Console.In.ReadToEnd();
 
-Console.Error.WriteLine("Logs from your program will appear here!");
-
-var match = false;
-
-foreach (string line in inputLine.Split('\n'))
+foreach (string arg in args)
 {
-    if (MatchPattern(line, pattern))
+    switch (arg)
     {
-        Console.WriteLine(line);
-        match = true;
+        case "-o":
+            onlyMatching = true;
+            break;
+        case "-E":
+            extendedRegularExpressions = true;
+            break;
+        default:
+            if (!extendedRegularExpressions)
+            {
+                Console.WriteLine("Expected argument '-E' to be defined before the pattern.");
+                Environment.Exit(2);
+            }
+
+            pattern = arg;
+            break;
     }
 }
 
-int exitCode = match ? 0 : 1;
+var foundMatch = false;
+
+foreach (string line in inputLine.Split(Environment.NewLine))
+{
+    if (MatchPattern(line, pattern, out List<string> matches))
+    {
+        if (onlyMatching)
+            foreach (string match in matches)
+            {
+                Console.WriteLine(match);
+            }
+        else
+            Console.WriteLine(line);
+
+        foundMatch = true;
+    }
+}
+
+int exitCode = foundMatch ? 0 : 1;
 Environment.Exit(exitCode);
 
 return;
@@ -62,43 +86,33 @@ static HashSet<State> Move(IEnumerable<State> states, char c)
     return result;
 }
 
-static bool Match(Fragment nfa, ReadOnlySpan<char> input)
+static bool Match(Fragment nfa, ReadOnlySpan<char> input, out int length)
 {
-    HashSet<State> current = EpsilonClosure([nfa.Start]);
+    length = -1;
 
-    foreach (char c in input)
-    {
-        current = EpsilonClosure(Move(current, c));
-        if (current.Count == 0)
-            return false;
-    }
-
-    return current.Contains(nfa.Accept);
-}
-
-static bool MatchPrefix(Fragment nfa, ReadOnlySpan<char> input)
-{
     HashSet<State> current = EpsilonClosure([nfa.Start]);
 
     if (current.Contains(nfa.Accept))
-        return true;
+        length = 0;
 
-    foreach (char c in input)
+    for (var i = 0; i < input.Length; i++)
     {
-        current = EpsilonClosure(Move(current, c));
+        current = EpsilonClosure(Move(current, input[i]));
 
         if (current.Count == 0)
-            return false;
+            break;
 
         if (current.Contains(nfa.Accept))
-            return true;
+            length = i + 1;
     }
 
-    return false;
+    return length >= 0;
 }
 
-static bool MatchPattern(string inputLine, string pattern)
+static bool MatchPattern(string inputLine, string pattern, out List<string> matches)
 {
+    matches = [];
+
     bool anchoredStart = pattern.StartsWith('^');
     bool anchoredEnd = pattern.EndsWith('$');
 
@@ -106,25 +120,52 @@ static bool MatchPattern(string inputLine, string pattern)
     if (anchoredEnd) pattern = pattern[..^1];
 
     Fragment nfa = new RegexParser(pattern).Parse();
+    ReadOnlySpan<char> line = inputLine.AsSpan();
 
     if (anchoredStart)
-        return anchoredEnd ? Match(nfa, inputLine) : MatchPrefix(nfa, inputLine);
-
-    for (var i = 0; i <= inputLine.Length; i++)
     {
-        ReadOnlySpan<char> slice = inputLine.AsSpan(i);
+        if (!Match(nfa, inputLine, out int length))
+            return false;
 
         if (anchoredEnd)
         {
-            if (Match(nfa, slice))
-                return true;
+            if (length != line.Length)
+                return false;
+
+            matches.Add(inputLine);
+            return true;
         }
-        else
-        {
-            if (MatchPrefix(nfa, slice))
-                return true;
-        }
+
+        matches.Add(inputLine[..length]);
+        return true;
     }
 
-    return false;
+    var pos = 0;
+    while (pos <= line.Length)
+    {
+        var found = false;
+        int start;
+        int bestLength = -1;
+
+        for (start = pos; start <= line.Length; start++)
+        {
+            if (!Match(nfa, line[start..], out int length))
+                continue;
+
+            if (anchoredEnd && start + length != line.Length)
+                continue;
+
+            bestLength = length;
+            found = true;
+            break;
+        }
+
+        if (!found)
+            break;
+
+        matches.Add(inputLine.Substring(start, bestLength));
+        pos = start + Math.Max(bestLength, 1);
+    }
+
+    return matches.Count > 0;
 }
