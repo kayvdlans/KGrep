@@ -1,12 +1,13 @@
 ﻿using System.Text;
 using KGrep;
 
+var recursiveFileSearch = false;
 var onlyMatching = false;
 var extendedRegularExpressions = false;
 var mode = ColorMode.Never;
 
 var pattern = string.Empty;
-string inputLine = Console.In.ReadToEnd();
+List<SourceFile> inputFiles = [];
 
 foreach (string arg in args)
 {
@@ -21,6 +22,9 @@ foreach (string arg in args)
                 _ => throw new Exception("Unexpected color value.")
             };
             break;
+        case "-r":
+            recursiveFileSearch = true;
+            break;
         case "-o":
             onlyMatching = true;
             break;
@@ -34,48 +38,79 @@ foreach (string arg in args)
                 Environment.Exit(2);
             }
 
-            pattern = arg;
+            if (string.IsNullOrEmpty(pattern))
+            {
+                pattern = arg;
+                break;
+            }
+
+            if (!Directory.Exists(arg) && !File.Exists(arg))
+            {
+                Console.WriteLine($"Expected '{arg}' to be a valid file path.");
+                Environment.Exit(2);
+            }
+
+            if (!recursiveFileSearch)
+            {
+                inputFiles.Add(new SourceFile(arg, File.ReadAllText(arg)));
+                break;
+            }
+
+            inputFiles.AddRange(Directory
+                .EnumerateFiles(arg, "*", SearchOption.AllDirectories)
+                .Select(file => new SourceFile(file, File.ReadAllText(file))));
+
             break;
     }
 }
 
+if (inputFiles.Count == 0)
+    inputFiles.Add(new SourceFile("Console", Console.In.ReadToEnd()));
+
 var foundMatch = false;
-foreach (string line in inputLine.Split(Environment.NewLine))
+foreach (SourceFile file in inputFiles)
 {
-    if (MatchPattern(line, pattern, out List<Match> matches))
+    foreach (string line in file.Input.Split(Environment.NewLine))
     {
-        ReadOnlySpan<char> span = line.AsSpan();
-        var start = 0;
-        var builder = new StringBuilder();
-        foreach (Match match in matches)
+        if (MatchPattern(line, pattern, out List<Match> matches))
         {
-            if (onlyMatching)
+            ReadOnlySpan<char> span = line.AsSpan();
+            var start = 0;
+            var builder = new StringBuilder();
+            foreach (Match match in matches)
             {
+                if (inputFiles.Count > 1)
+                    builder.Append($"{file.Path}:");
+
+                if (onlyMatching)
+                {
+                    builder.Append(span.Slice(match.Start, match.Length));
+                    builder.Append(Environment.NewLine);
+                    continue;
+                }
+
+                builder.Append(span[start..match.Start]);
+                builder.Append(ShouldHighlight(mode) ? "\x1b[01;31m" : "");
                 builder.Append(span.Slice(match.Start, match.Length));
-                builder.Append(Environment.NewLine);
-                continue;
+                builder.Append(ShouldHighlight(mode) ? "\x1b[m" : "");
+                start = match.Start + match.Length;
             }
 
-            builder.Append(span[start..match.Start]);
-            builder.Append(ShouldHighlight(mode) ? "\x1b[01;31m" : "");
-            builder.Append(span.Slice(match.Start, match.Length));
-            builder.Append(ShouldHighlight(mode) ? "\x1b[m" : "");
-            start = match.Start + match.Length;
+            if (!onlyMatching)
+            {
+                if (start < line.Length)
+                    builder.Append(span[start..]);
+
+                builder.Append(Environment.NewLine);
+            }
+
+            Console.Write(builder);
+
+            foundMatch = true;
         }
-
-        if (!onlyMatching)
-        {
-            if (start < line.Length)
-                builder.Append(span[start..]);
-
-            builder.Append(Environment.NewLine);
-        }
-
-        Console.Write(builder);
-
-        foundMatch = true;
     }
 }
+
 
 int exitCode = foundMatch ? 0 : 1;
 Environment.Exit(exitCode);
