@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace KGrep;
 
 public class RegexParser(string pattern)
@@ -63,6 +65,7 @@ public class RegexParser(string pattern)
             if (Consume('*')) return Nfa.Star(atom);
             if (Consume('+')) return Nfa.Plus(atom);
             if (Consume('?')) return Nfa.Question(atom);
+            if (Consume('{')) return RepeatAtom(atom);
         }
 
         return atom;
@@ -95,6 +98,63 @@ public class RegexParser(string pattern)
         return Peek == '[' ? ParseCharacterClass() : Nfa.Literal(Next());
     }
 
+    private Fragment RepeatAtom(Fragment atom)
+    {
+        var mode = RepeatMode.MatchExact;
+        int n = NextN();
+        int m = -1;
+
+        if (Consume(','))
+        {
+            if (Peek == '}')
+            {
+                mode = RepeatMode.MatchAtLeast;
+            }
+            else
+            {
+                mode = RepeatMode.MatchBetween;
+                m = NextN();
+            }
+        }
+
+        if (!Consume('}'))
+            throw new Exception("Unclosed '{'");
+
+        Fragment result;
+        switch (n)
+        {
+            case 0:
+                result = Nfa.Epsilon();
+                break;
+            case 1:
+                result = atom;
+                break;
+            default:
+                result = atom.Clone();
+                for (var i = 1; i < n; i++)
+                {
+                    result = Nfa.Concat(result, atom.Clone());
+                }
+
+                break;
+        }
+
+        if (mode == RepeatMode.MatchBetween)
+        {
+            int repeats = m - n;
+            for (var i = 0; i < repeats; i++)
+            {
+                result = Nfa.Concat(result, Nfa.Question(atom.Clone()));
+            }
+        }
+
+        return mode switch
+        {
+            RepeatMode.MatchAtLeast => Nfa.Concat(result, Nfa.Star(atom)),
+            _ => result
+        };
+    }
+
     private Fragment ParseCharacterClass()
     {
         Consume('[');
@@ -116,5 +176,25 @@ public class RegexParser(string pattern)
             : c => Array.IndexOf(set, c) >= 0;
 
         return Nfa.PredicateAtom(pred);
+    }
+
+    private int NextN()
+    {
+        var builder = new StringBuilder();
+        while (!End && Peek != ',' && Peek != '}')
+        {
+            builder.Append(Next());
+        }
+
+        return int.TryParse(builder.ToString(), out int n)
+            ? n
+            : throw new Exception($"Unexpected n quantifier: {builder}");
+    }
+
+    private enum RepeatMode
+    {
+        MatchExact,
+        MatchAtLeast,
+        MatchBetween
     }
 }
